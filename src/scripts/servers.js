@@ -135,6 +135,17 @@ class Servers extends EventEmitter {
 			headers.set('Authorization', `Basic ${ btoa(`${ url.username }:${ url.password }`) }`);
 		}
 
+		/**
+		 * Sandstorm urls come with the token as a hash
+		 * https://api.oasis.sandstorm.io#R75AxS08WI_MLEks27sn0kyDOGEVqVPjN97KWudxA8H
+		 **/
+		if (hostUrl.includes('#')) {
+			const url = new URL(hostUrl);
+			const token = url.hash.substring(1);
+			hostUrl = url.origin;
+			headers.set('Authorization', `Bearer ${ token }`);
+		}
+
 		const response = await Promise.race([
 			fetch(`${ hostUrl }/api/info`, { headers }),
 			new Promise((resolve, reject) => setTimeout(() => reject('timeout'), timeout)),
@@ -151,39 +162,88 @@ class Servers extends EventEmitter {
 		return !!hosts[hostUrl];
 	}
 
-	addHost(hostUrl) {
-		const { hosts } = this;
+	mapSandstormMatchToHost(sandStormMatch) {
+		const [
+			authUrl,
+			protocol,
+			hostname,
+			token,
+		] = sandStormMatch;
 
-		const match = hostUrl.match(/^(https?:\/\/)([^:]+):([^@]+)@(.+)$/);
-		let username;
-		let password;
-		let authUrl;
-		if (match) {
-			authUrl = hostUrl;
-			hostUrl = match[1] + match[4];
-			username = match[2];
-			password = match[3];
-		}
+		const hostUrl = protocol + hostname;
 
-		if (this.hostExists(hostUrl) === true) {
-			this.setActive(hostUrl);
-			return false;
-		}
+		return {
+			title: hostUrl,
+			url: hostUrl,
+			authUrl,
+			username: 'sandstorm',
+			password: token,
+		};
+	}
 
-		hosts[hostUrl] = {
+	mapBasicAuthMatchToHost(basicAuthMatch) {
+		const [
+			authUrl,
+			protocol,
+			username,
+			password,
+			hostname,
+		] = basicAuthMatch;
+
+		const hostUrl = protocol + hostname;
+
+		return {
 			title: hostUrl,
 			url: hostUrl,
 			authUrl,
 			username,
 			password,
 		};
+	}
+
+	parseHostUrl(hostUrl) {
+		/**
+		 * Captures token from sandstorm url
+		 * https://api.oasis.sandstorm.io#R75AxS08WI_MLEks27sn0kyDOGEVqVPjN97KWudxA8H
+		 */
+		const sandStormRegex = /^(https?:\/\/)(.+)#([^#]+)$/;
+		const sandStormMatch = hostUrl.match(sandStormRegex);
+
+		if (sandStormMatch) {
+			return this.mapSandstormMatchToHost(sandStormMatch);
+		}
+
+		/**
+		 * Captures username:password from server url
+		 * https://username:password@any-cost.com/
+		 */
+		const basicAuthRegex = /^(https?:\/\/)([^:]+):([^@]+)@(.+)$/;
+		const basicAuthMatch = hostUrl.match(basicAuthRegex);
+
+		if (basicAuthMatch) {
+			return this.mapBasicAuthMatchToHost(basicAuthMatch);
+		}
+	}
+
+	addHost(hostUrl) {
+		const { hosts } = this;
+
+		const host = this.parseHostUrl(hostUrl);
+
+		if (this.hostExists(host.url) === true) {
+			this.setActive(host.url);
+			return false;
+		}
+
+		hosts[host.url] = host;
+
 		this.hosts = hosts;
 
 		ipcRenderer.send('update-servers', this._hosts);
 
-		this.emit('host-added', hostUrl);
+		this.emit('host-added', host.url);
 
-		return hostUrl;
+		return host.url;
 	}
 
 	removeHost(hostUrl) {
